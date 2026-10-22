@@ -58,6 +58,32 @@ DISABLE_HDIM128 = os.getenv("HSTU_DISABLE_HDIM128", "FALSE") == "TRUE"
 DISABLE_HDIM256 = os.getenv("HSTU_DISABLE_HDIM256", "FALSE") == "TRUE"
 DISABLE_86OR89 = os.getenv("HSTU_DISABLE_86OR89", "TRUE") == "TRUE"
 arch_list = os.getenv("HSTU_ARCH_LIST", "8.0 9.0 10.0")
+arch_targets = set()
+ptx_targets = set()
+for arch_entry in arch_list.split():
+    arch, separator, suffix = arch_entry.partition("+")
+    if separator:
+        if suffix != "PTX":
+            raise ValueError(f"Unsupported architecture suffix: {arch_entry}")
+        ptx_targets.add(arch)
+    arch_targets.add(arch)
+
+supported_arches = {"8.0", "8.6", "9.0", "10.0"}
+unsupported_arches = arch_targets - supported_arches
+if unsupported_arches:
+    raise ValueError(
+        "Unsupported HSTU_ARCH_LIST architecture(s): "
+        f"{', '.join(sorted(unsupported_arches))}; supported: "
+        "8.0, 8.6, 9.0, 10.0"
+    )
+if not arch_targets:
+    raise ValueError("HSTU_ARCH_LIST must include at least one architecture")
+unsupported_ptx_targets = ptx_targets - {"8.0", "8.6"}
+if unsupported_ptx_targets:
+    raise ValueError(
+        "PTX output is supported only for Ampere targets 8.0 and 8.6; "
+        f"got: {', '.join(sorted(unsupported_ptx_targets))}"
+    )
 
 ONLY_COMPILE_SO = os.getenv("HSTU_ONLY_COMPILE_SO", "FALSE") == "TRUE"
 
@@ -182,18 +208,26 @@ if not SKIP_CUDA_BUILD:
     if bare_metal_version < Version("12.3"):
         raise RuntimeError("HSTU is only supported on CUDA 12.3 and above")
 
-    if "8.0" not in arch_list and "9.0" not in arch_list and "10.0" not in arch_list:
-        raise ValueError("At least one of 8.0, 9.0, or 10.0 must be in arch_list")
+    ampere_arches = arch_targets & {"8.0", "8.6"}
+    hopper_enabled = "9.0" in arch_targets
 
-    # sm100 (Blackwell) is pure Python/Triton, only sm80/sm90 need CUDA compilation
-    if "8.0" in arch_list or "9.0" in arch_list:
+    # sm100 (Blackwell) is pure Python/Triton; sm80, sm86, and sm90 use CUDA.
+    if ampere_arches or hopper_enabled:
         cc_flag = []
-        if "9.0" in arch_list:
+        if hopper_enabled:
             cc_flag.append("-gencode")
             cc_flag.append("arch=compute_90a,code=sm_90a")
-        if "8.0" in arch_list:
+        for ampere_arch in sorted(ampere_arches):
+            compute_capability = ampere_arch.replace(".", "")
             cc_flag.append("-gencode")
-            cc_flag.append("arch=compute_80,code=sm_80")
+            cc_flag.append(
+                f"arch=compute_{compute_capability},code=sm_{compute_capability}"
+            )
+            if ampere_arch in ptx_targets:
+                cc_flag.append("-gencode")
+                cc_flag.append(
+                    f"arch=compute_{compute_capability},code=compute_{compute_capability}"
+                )
 
         # HACK: The compiler flag -D_GLIBCXX_USE_CXX11_ABI is set to be the same as
         # torch._C._GLIBCXX_USE_CXX11_ABI
@@ -246,13 +280,17 @@ if not SKIP_CUDA_BUILD:
         torch_cpp_sources = []
         subprocess.run(["rm", "-rf", "src/hstu_ampere/instantiations/*"])
         subprocess.run(["rm", "-rf", "src/hstu_hopper/instantiations/*"])
-        if "8.0" in arch_list:
+        if ampere_arches:
             torch_cpp_sources.append("src/hstu_ampere/hstu_ops_gpu.cpp")
             generate_kernels_ampere("src/hstu_ampere/instantiations")
-        if "9.0" in arch_list:
+        if hopper_enabled:
             torch_cpp_sources.append("src/hstu_hopper/hstu_ops_gpu.cpp")
             generate_kernels_hopper("src/hstu_hopper/instantiations")
-        cuda_sources = (glob.glob("src/hstu_ampere/instantiations/*.cu") if "8.0" in arch_list else []) + (glob.glob("src/hstu_hopper/instantiations/*.cu") if "9.0" in arch_list else [])
+        cuda_sources = (
+            glob.glob("src/hstu_ampere/instantiations/*.cu") if ampere_arches else []
+        ) + (
+            glob.glob("src/hstu_hopper/instantiations/*.cu") if hopper_enabled else []
+        )
 
         nvcc_flags = [
             "-O3",
@@ -282,9 +320,9 @@ if not SKIP_CUDA_BUILD:
         include_dirs = [
             cutlass_dir / "include",
         ]
-        if "8.0" in arch_list:
+        if ampere_arches:
             include_dirs.append(Path(this_dir) / "src" / "hstu_ampere")
-        if "9.0" in arch_list:
+        if hopper_enabled:
             include_dirs.append(Path(this_dir) / "src" / "hstu_hopper")
 
         sources = None
@@ -357,7 +395,7 @@ packages = find_packages(
 )
 package_dir = {}
 
-if "10.0" in arch_list:
+if "10.0" in arch_targets:
     packages.append("hstu.hstu_blackwell")
     package_dir["hstu.hstu_blackwell"] = "src/hstu_blackwell"
 
