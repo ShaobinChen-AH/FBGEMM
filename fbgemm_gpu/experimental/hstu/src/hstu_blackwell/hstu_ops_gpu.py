@@ -75,8 +75,8 @@ def hstu_varlen_fwd_100(
         assert page_ids is not None and page_indptrs is not None, "Paged KV is True, but page metadata is missing."
         assert paged_kv.dim() == 5 and paged_kv.shape[2] == 128, "Only accept 5-D paged KV table with page_size=512"
 
-    out = torch.empty_like(q)
-    # out = torch.zeros_like(q)  # for test
+    # Do not expose allocator contents when a row block is skipped.
+    out = torch.zeros_like(q)
     q_tensor, k_tensor, v_tensor, o_tensor = [
         from_dlpack(t.detach(), assumed_align=16).mark_layout_dynamic(leading_dim=t.ndim - 1)
         for t in (q, k, v, out)

@@ -564,7 +564,8 @@ std::tuple<at::Tensor, at::Tensor> hstu_varlen_fwd_80(
     CHECK_SHAPE(num_targets.value(), batch_size);
   }
 
-  at::Tensor out = torch::empty_like(q);
+  // Do not expose allocator contents when a row block is skipped.
+  at::Tensor out = torch::zeros_like(q);
 
   auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
   const int seqlen_q_rounded = round_multiple(

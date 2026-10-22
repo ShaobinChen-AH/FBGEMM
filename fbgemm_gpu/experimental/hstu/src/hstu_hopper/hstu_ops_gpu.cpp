@@ -743,7 +743,8 @@ std::tuple<at::Tensor, at::Tensor> hstu_varlen_fwd_90(
   }
 
   auto out_type = output_dtype == 0 ? at::ScalarType::BFloat16 : at::ScalarType::Half;
-  at::Tensor out = torch::empty_like(q, out_type);
+  // Do not expose allocator contents when a row block is skipped.
+  at::Tensor out = torch::zeros_like(q, out_type);
 
   auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
   const int seqlen_q_rounded = round_multiple(
